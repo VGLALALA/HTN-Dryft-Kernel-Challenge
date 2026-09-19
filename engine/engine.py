@@ -1,7 +1,4 @@
-"""Qwen3-4B greedy engine: custom BF16 forward, static KV, CUDA-graph decode.
-
-Every yielded token is native greedy (or within the 2.0-logit tie margin).
-"""
+"""Qwen3-4B greedy engine: packed weights, static KV cache, SDPA attention."""
 
 from __future__ import annotations
 
@@ -33,14 +30,7 @@ class Engine:
         with torch.inference_mode():
             runner.prefill(ids)
             yield runner.tokens_to_host()
-            if max_new_tokens == 1:
-                return
-
-            runner.token.copy_(runner.out_ids)
-            runner.pos.fill_(prompt_len)
-            for step in range(max_new_tokens - 1):
-                runner.replay()
+            for t in range(max_new_tokens - 1):
+                runner.token.copy_(runner.out_ids)
+                runner.decode_step(prompt_len + t)
                 yield runner.tokens_to_host()
-                if step + 2 < max_new_tokens:
-                    runner.token.copy_(runner.out_ids)
-                    runner.pos.add_(1)
