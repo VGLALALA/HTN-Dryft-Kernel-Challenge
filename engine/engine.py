@@ -1,8 +1,6 @@
-"""Qwen3-4B greedy engine: packed weights, static KV, sliced-SDPA decode.
+"""Qwen3-4B greedy engine: packed weights, static KV, CUDA-graph decode.
 
-Padded CUDA-graph attention scores the full cache every step and is slower
-than eager SDPA on the live prefix. Spec is omitted until KV rollback is
-in the same archive as engine.py.
+Graph attention uses SDPA over the padded cache with an additive mask.
 """
 
 from __future__ import annotations
@@ -28,8 +26,13 @@ class Engine:
         with torch.inference_mode():
             runner.prefill(ids)
             yield runner.tokens_to_host()
+            use_graph = runner.graph is not None
             for t in range(max_new_tokens - 1):
                 pos = prompt_len + t
                 runner.token.copy_(runner.out_ids)
-                runner.decode_step_eager(pos)
+                if use_graph:
+                    runner.bind_pos(pos)
+                    runner.replay()
+                else:
+                    runner.decode_step_eager(pos)
                 yield runner.tokens_to_host()

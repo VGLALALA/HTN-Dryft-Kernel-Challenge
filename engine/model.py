@@ -210,8 +210,7 @@ class QwenRunner:
         self.cos_row = torch.empty(HEAD_DIM, device=DEVICE, dtype=DTYPE)
         self.sin_row = torch.empty(HEAD_DIM, device=DEVICE, dtype=DTYPE)
         self.attn_mask = torch.zeros(1, 1, 1, max_len, device=DEVICE, dtype=DTYPE)
-        # Skip CUDA-graph capture: padded full-cache attention is slower than
-        # sliced SDPA on the live prefix, and capture time eats warmup.
+        self.try_capture()
 
     def bind_pos(self, pos: int) -> None:
         """Host-side: point the graph inputs at ``pos``. Not captured."""
@@ -277,7 +276,12 @@ class QwenRunner:
             v = qkv[:, Q_DIM + KV_DIM :].view(b, N_KV, HEAD_DIM)
             self.k_cache[i].index_copy_(2, idx, k.unsqueeze(2))
             self.v_cache[i].index_copy_(2, idx, v.unsqueeze(2))
-            attn = graph_attn(q, self.k_cache[i], self.v_cache[i], mask)
+            attn = sdpa(
+                q.unsqueeze(2),
+                self.k_cache[i],
+                self.v_cache[i],
+                attn_mask=mask,
+            ).squeeze(2)
             x = x + F.linear(attn.reshape(b, Q_DIM), layer.o)
             x = self._mlp(x, layer)
         self.out_ids.copy_(torch.argmax(F.linear(rms_norm(x, self.final_norm), self.embed), dim=-1))
