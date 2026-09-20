@@ -276,12 +276,7 @@ class QwenRunner:
             v = qkv[:, Q_DIM + KV_DIM :].view(b, N_KV, HEAD_DIM)
             self.k_cache[i].index_copy_(2, idx, k.unsqueeze(2))
             self.v_cache[i].index_copy_(2, idx, v.unsqueeze(2))
-            attn = sdpa(
-                q.unsqueeze(2),
-                self.k_cache[i],
-                self.v_cache[i],
-                attn_mask=mask,
-            ).squeeze(2)
+            attn = graph_attn(q, self.k_cache[i], self.v_cache[i], mask)
             x = x + F.linear(attn.reshape(b, Q_DIM), layer.o)
             x = self._mlp(x, layer)
         self.out_ids.copy_(torch.argmax(F.linear(rms_norm(x, self.final_norm), self.embed), dim=-1))
@@ -360,13 +355,6 @@ class QwenRunner:
             hidden = self._prefill_chunk(hidden, start, end)
         logits = F.linear(rms_norm(hidden[:, -1, :], self.final_norm), self.embed)
         self.out_ids.copy_(torch.argmax(logits, dim=-1))
-
-    def verify(self, tokens: torch.Tensor, start: int) -> torch.Tensor:
-        """Teacher-force ``tokens`` [B, T] at ``start`` and return greedy ids [B, T]."""
-        hidden = F.embedding(tokens, self.embed)
-        hidden = self._prefill_chunk(hidden, start, start + tokens.shape[1])
-        logits = F.linear(rms_norm(hidden, self.final_norm), self.embed)
-        return torch.argmax(logits, dim=-1)
 
     def tokens_to_host(self) -> list[int]:
         self.pinned_out.copy_(self.out_ids, non_blocking=True)
