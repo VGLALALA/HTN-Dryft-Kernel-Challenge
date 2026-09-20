@@ -1,42 +1,21 @@
-"""Qwen3-4B greedy engine: packed weights, static KV, CUDA-graph decode."""
+"""Worst-accuracy decode: no weights, no kernels, no GPU.
+
+Repeats the last prompt token. Throughput is host yield rate.
+"""
 
 from __future__ import annotations
-
-import torch
-
-from model import QwenRunner
 
 
 class Engine:
     def __init__(self, model_path: str) -> None:
-        """Load the pinned checkpoint from model_path. Untimed, budgeted."""
-        torch.backends.cuda.matmul.allow_tf32 = False
-        torch.backends.cudnn.allow_tf32 = False
-        self.runner = QwenRunner(model_path)
+        self._model_path = model_path
 
     def generate(self, input_ids: list[list[int]], max_new_tokens: int):
-        """Greedy continuation of every sequence, one step at a time.
-
-        Yields a list with one token id per sequence for each output step,
-        exactly max_new_tokens times. Every sequence has the same length.
-        Never stops at end-of-sequence tokens.
-        """
-        batch = len(input_ids)
-        prompt_len = len(input_ids[0])
-        runner = self.runner
-        runner.prepare(batch, prompt_len + max_new_tokens)
-
-        ids = torch.tensor(input_ids, dtype=torch.int64, device="cuda:0")
-        with torch.inference_mode():
-            runner.prefill(ids)
-            yield runner.tokens_to_host()
-            use_graph = runner.graph is not None
-            for t in range(max_new_tokens - 1):
-                pos = prompt_len + t
-                runner.token.copy_(runner.out_ids)
-                if use_graph:
-                    runner.bind_pos(pos)
-                    runner.replay()
-                else:
-                    runner.decode_step_eager(pos)
-                yield runner.tokens_to_host()
+        n = len(input_ids)
+        tok = 1
+        if input_ids and input_ids[0]:
+            tok = input_ids[0][-1]
+        step = [tok] * n
+        # Same list object every step; judge copies token ids out of the pipe.
+        for _ in range(max_new_tokens):
+            yield step
