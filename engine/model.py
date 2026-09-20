@@ -210,7 +210,8 @@ class QwenRunner:
         self.cos_row = torch.empty(HEAD_DIM, device=DEVICE, dtype=DTYPE)
         self.sin_row = torch.empty(HEAD_DIM, device=DEVICE, dtype=DTYPE)
         self.attn_mask = torch.zeros(1, 1, 1, max_len, device=DEVICE, dtype=DTYPE)
-        self.try_capture()
+        # Skip CUDA-graph capture: padded full-cache attention is slower than
+        # sliced SDPA on the live prefix, and capture time eats warmup.
 
     def bind_pos(self, pos: int) -> None:
         """Host-side: point the graph inputs at ``pos``. Not captured."""
@@ -355,6 +356,13 @@ class QwenRunner:
             hidden = self._prefill_chunk(hidden, start, end)
         logits = F.linear(rms_norm(hidden[:, -1, :], self.final_norm), self.embed)
         self.out_ids.copy_(torch.argmax(logits, dim=-1))
+
+    def verify(self, tokens: torch.Tensor, start: int) -> torch.Tensor:
+        """Teacher-force ``tokens`` [B, T] at ``start`` and return greedy ids [B, T]."""
+        hidden = F.embedding(tokens, self.embed)
+        hidden = self._prefill_chunk(hidden, start, start + tokens.shape[1])
+        logits = F.linear(rms_norm(hidden, self.final_norm), self.embed)
+        return torch.argmax(logits, dim=-1)
 
     def tokens_to_host(self) -> list[int]:
         self.pinned_out.copy_(self.out_ids, non_blocking=True)

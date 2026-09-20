@@ -1,4 +1,9 @@
-"""Qwen3-4B greedy engine: packed weights, static KV, CUDA-graph decode."""
+"""Qwen3-4B greedy engine: packed weights, static KV, sliced-SDPA decode.
+
+Padded CUDA-graph attention scores the full cache every step and is slower
+than eager SDPA on the live prefix. Spec is omitted until KV rollback is
+in the same archive as engine.py.
+"""
 
 from __future__ import annotations
 
@@ -9,18 +14,11 @@ from model import QwenRunner
 
 class Engine:
     def __init__(self, model_path: str) -> None:
-        """Load the pinned checkpoint from model_path. Untimed, budgeted."""
         torch.backends.cuda.matmul.allow_tf32 = False
         torch.backends.cudnn.allow_tf32 = False
         self.runner = QwenRunner(model_path)
 
     def generate(self, input_ids: list[list[int]], max_new_tokens: int):
-        """Greedy continuation of every sequence, one step at a time.
-
-        Yields a list with one token id per sequence for each output step,
-        exactly max_new_tokens times. Every sequence has the same length.
-        Never stops at end-of-sequence tokens.
-        """
         batch = len(input_ids)
         prompt_len = len(input_ids[0])
         runner = self.runner
@@ -30,13 +28,8 @@ class Engine:
         with torch.inference_mode():
             runner.prefill(ids)
             yield runner.tokens_to_host()
-            use_graph = runner.graph is not None
             for t in range(max_new_tokens - 1):
                 pos = prompt_len + t
                 runner.token.copy_(runner.out_ids)
-                if use_graph:
-                    runner.bind_pos(pos)
-                    runner.replay()
-                else:
-                    runner.decode_step_eager(pos)
+                runner.decode_step_eager(pos)
                 yield runner.tokens_to_host()
