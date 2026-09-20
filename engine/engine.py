@@ -1,4 +1,4 @@
-"""Qwen3-4B greedy engine: packed weights, static KV cache, SDPA attention."""
+"""Qwen3-4B greedy engine: packed weights, static KV, CUDA-graph decode."""
 
 from __future__ import annotations
 
@@ -30,7 +30,13 @@ class Engine:
         with torch.inference_mode():
             runner.prefill(ids)
             yield runner.tokens_to_host()
+            use_graph = runner.graph is not None
             for t in range(max_new_tokens - 1):
+                pos = prompt_len + t
                 runner.token.copy_(runner.out_ids)
-                runner.decode_step(prompt_len + t)
+                if use_graph:
+                    runner.bind_pos(pos)
+                    runner.replay()
+                else:
+                    runner.decode_step_eager(pos)
                 yield runner.tokens_to_host()
